@@ -1,0 +1,8 @@
+.gradle/
+build/
+app/build/
+local.properties
+rust/woxlium_core/target/
+*.iml
+.idea/
+captures/
