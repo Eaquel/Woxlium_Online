@@ -30,7 +30,7 @@ class Sfx(context: Context, private val prefs: Prefs) {
                 .build()
         ).build()
     private val ids = HashMap<String, Int>()
-    private val dir = File(context.cacheDir, "sfx_v1").apply { mkdirs() }
+    private val dir = File(context.cacheDir, "sfx_v2").apply { mkdirs() }
     @Volatile private var ready = false
     private var ambienceStream = 0
     private var lastGrowl = 0L
@@ -77,7 +77,7 @@ class Sfx(context: Context, private val prefs: Prefs) {
         val r = 0.92f + rng.nextFloat() * 0.16f
         if (ev and NativeBridge.EV_SWING != 0) play("swing", 0.5f, r)
         if (ev and NativeBridge.EV_HIT != 0) { play("punch", 1f, r); buzz(18) }
-        if (ev and NativeBridge.EV_KICK_HIT != 0) { play("kick", 1f, r); buzz(30) }
+        if (ev and NativeBridge.EV_HEAVY_HIT != 0) { play("kick", 1f, r); buzz(30) }
         if (ev and NativeBridge.EV_CRIT != 0) { play("crit", 0.9f); buzz(45) }
         if (ev and NativeBridge.EV_ZOMBIE_DIE != 0) play("zdie", 0.8f, r)
         if (ev and NativeBridge.EV_PLAYER_HURT != 0) { play("hurt", 0.9f, r); buzz(60) }
@@ -86,9 +86,8 @@ class Sfx(context: Context, private val prefs: Prefs) {
         if (ev and NativeBridge.EV_HEAL != 0) play("heal", 0.8f)
         if (ev and NativeBridge.EV_WAVE_START != 0) play("horn", 0.7f)
         if (ev and NativeBridge.EV_WAVE_CLEAR != 0) play("clear", 0.7f)
-        if (ev and NativeBridge.EV_PICKUP != 0) play("pickup", 0.8f)
+        if (ev and NativeBridge.EV_STEP != 0) play("step", 0.35f, r)
         if (ev and NativeBridge.EV_NO_STAMINA != 0) play("tired", 0.6f)
-        if (ev and NativeBridge.EV_EXPLODE != 0) { play("boom", 1f); buzz(80) }
         if (ev and NativeBridge.EV_GAME_OVER != 0) { play("gameover", 1f); buzz(250) }
         if (ev and NativeBridge.EV_VICTORY != 0) play("clear", 1f, 0.8f)
         if (ev and NativeBridge.EV_GROWL != 0) {
@@ -172,12 +171,11 @@ class Sfx(context: Context, private val prefs: Prefs) {
             "hurt" to { val n = noise(6); mix(sweep(0.3f, 220f, 120f, 9f, saw).also { lowpass(it, 0.1f) }, lowpass(tone(0.1f, 30f) { _, _ -> n() }, 0.4f)) },
             "block" to { tone(0.35f, 12f) { t, _ -> sin(2 * PI.toFloat() * 1180f * t) * 0.4f + sin(2 * PI.toFloat() * 1770f * t) * 0.25f + sin(2 * PI.toFloat() * 610f * t) * 0.3f } },
             "heal" to { mix(sweep(0.6f, 440f, 880f, 3.5f), sweep(0.6f, 660f, 1320f, 4f).also { for (i in it.indices) it[i] *= 0.4f }) },
-            "pickup" to { mix(tone(0.12f, 18f) { t, _ -> sin(2 * PI.toFloat() * 660f * t) * 0.6f }, FloatArray(2400) + tone(0.15f, 14f) { t, _ -> sin(2 * PI.toFloat() * 990f * t) * 0.6f }) },
             "horn" to { sweep(1.1f, 98f, 92f, 1.6f, saw).also { lowpass(it, 0.06f) } },
             "clear" to { mix(tone(0.9f, 3f) { t, _ -> sin(2 * PI.toFloat() * 523f * t) * 0.35f }, FloatArray(4400) + tone(0.9f, 3f) { t, _ -> sin(2 * PI.toFloat() * 784f * t) * 0.35f }) },
             "tired" to { val n = noise(7); lowpass(tone(0.5f, 5f, 0.12f) { _, _ -> n() * 0.5f }, 0.05f) },
             "growl" to { val n = noise(8); lowpass(tone(1.0f, 2.5f, 0.15f) { t, _ -> n() * (0.6f + 0.4f * sin(2 * PI.toFloat() * 11f * t)) }, 0.03f).also { for (i in it.indices) it[i] *= 3f } },
-            "boom" to { val n = noise(9); mix(sweep(0.9f, 80f, 25f, 4f), lowpass(tone(0.9f, 4.5f) { _, _ -> n() }, 0.08f)) },
+            "step" to { val n = noise(9); lowpass(tone(0.12f, 35f, 0.005f) { _, _ -> n() * 0.7f }, 0.06f) },
             "gameover" to { sweep(1.6f, 196f, 65f, 1.4f, saw).also { lowpass(it, 0.05f) } },
             "click" to { tone(0.05f, 60f) { t, _ -> sin(2 * PI.toFloat() * 1500f * t) * 0.5f } },
             "wind" to {

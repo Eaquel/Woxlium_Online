@@ -6,3 +6,4 @@ rust/woxlium_core/target/
 *.iml
 .idea/
 captures/
+__pycache__/

@@ -1,0 +1,30 @@
+{
+  "out": "build/wxm",
+  "_ual": "Quaternius Universal Animation Library (CC0)",
+  "characters": [
+    {"name": "player_arms", "avatar": "RB/Avatars/Adults/Male_Adult_05/Export/Male_Adult_05.fbx", "arms_only": true,
+     "clips": [
+       {"name": "guard", "file": "UAL", "action": "Punch_Enter", "mapping": "ual", "in_place": true},
+       {"name": "jab", "file": "UAL", "action": "Punch_Jab", "mapping": "ual", "in_place": true},
+       {"name": "cross", "file": "UAL", "action": "Punch_Cross", "mapping": "ual", "in_place": true},
+       {"name": "hit", "file": "UAL", "action": "Hit_Chest", "mapping": "ual", "in_place": true}
+     ]},
+    {"name": "zombie_a", "avatar": "RB/Avatars/Adults/Male_Adult_07/Export/Male_Adult_07.fbx", "clips": "ZOMBIE"},
+    {"name": "zombie_b", "avatar": "RB/Avatars/Adults/Male_Adult_12/Export/Male_Adult_12.fbx", "clips": "ZOMBIE"},
+    {"name": "zombie_c", "avatar": "RB/Avatars/Adults/Male_Adult_04/Export/Male_Adult_04.fbx", "clips": "ZOMBIE"},
+    {"name": "zombie_d", "avatar": "RB/Avatars/Adults/Male_Adult_18/Export/Male_Adult_18.fbx", "clips": "ZOMBIE"}
+  ],
+  "zombie_clips": [
+    {"name": "idle", "file": "RB/Animations/all_animations_max_motextr_static/m_idle_drunk_01.max.fbx", "mapping": "rb", "end": 151, "loop": true, "in_place": true},
+    {"name": "walk", "file": "RB/Animations/all_animations_max_motextr_xy/m_walk_drunk.max.fbx", "mapping": "rb", "loop": true, "in_place": true,
+     "arms_from": {"file": "UAL", "action": "Pistol_Aim_Neutral", "mapping": "ual", "frame": 4}},
+    {"name": "walk2", "file": "RB/Animations/all_animations_max_motextr_xy/m_walk_bruised.max.fbx", "mapping": "rb", "loop": true, "in_place": true},
+    {"name": "run", "file": "RB/Animations/all_animations_max_motextr_xy/m_run_injured.max.fbx", "mapping": "rb", "loop": true, "in_place": true,
+     "arms_from": {"file": "UAL", "action": "Pistol_Aim_Neutral", "mapping": "ual", "frame": 4}},
+    {"name": "attack", "file": "UAL", "action": "Punch_Cross", "mapping": "ual", "speed": 0.75, "in_place": true},
+    {"name": "attack2", "file": "UAL", "action": "Punch_Jab", "mapping": "ual", "speed": 0.7, "in_place": true},
+    {"name": "hit_chest", "file": "UAL", "action": "Hit_Chest", "mapping": "ual", "in_place": true},
+    {"name": "hit_head", "file": "UAL", "action": "Hit_Head", "mapping": "ual", "in_place": true},
+    {"name": "death", "file": "UAL", "action": "Death01", "mapping": "ual"}
+  ]
+}

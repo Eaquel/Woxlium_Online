@@ -124,3 +124,32 @@ class MinimapTouch(ctx: Context) : View(ctx) {
         setMeasuredDimension(s, s)
     }
 }
+
+/** Drag anywhere on it to look around (first-person camera). */
+class LookPad(ctx: Context, private val onLook: (Float, Float) -> Unit) : View(ctx) {
+    private var pointer = -1
+    private var lx = 0f
+    private var ly = 0f
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> if (pointer == -1) {
+                val i = e.actionIndex
+                pointer = e.getPointerId(i)
+                lx = e.getX(i); ly = e.getY(i)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val i = e.findPointerIndex(pointer)
+                if (i >= 0) {
+                    onLook(e.getX(i) - lx, e.getY(i) - ly)
+                    lx = e.getX(i); ly = e.getY(i)
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                if (e.actionMasked == MotionEvent.ACTION_CANCEL || e.getPointerId(e.actionIndex) == pointer) pointer = -1
+            }
+        }
+        return true
+    }
+}

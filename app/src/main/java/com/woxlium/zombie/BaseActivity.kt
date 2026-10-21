@@ -48,10 +48,17 @@ abstract class BaseActivity : Activity() {
     }
 
     protected fun showOverlay(content: View, dim: Boolean = true): View {
+        // panels scroll instead of being clipped on short (landscape) screens
+        val scroll = android.widget.ScrollView(this).apply {
+            isFillViewport = false
+            isVerticalScrollBarEnabled = false
+            addView(content)
+        }
         val shade = FrameLayout(this).apply {
             setBackgroundColor(if (dim) 0xAA000000.toInt() else 0)
             isClickable = true
-            addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER))
+            val m = (12 * resources.displayMetrics.density).toInt()
+            addView(scroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER).apply { setMargins(m, m, m, m) })
         }
         content.scaleX = 0.85f; content.scaleY = 0.85f; content.alpha = 0f
         content.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(160).start()

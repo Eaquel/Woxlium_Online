@@ -48,14 +48,14 @@ object Panels {
             addView(Ui.label(ctx, "AYARLAR", 26f, Ui.ACCENT, Gravity.CENTER))
             addView(row(ctx, "Ses efektleri", slider(ctx, 0, 100, p.sfxVolume) { p.sfxVolume = it }))
             addView(row(ctx, "Titreşim", toggle(ctx, listOf("KAPALI", "AÇIK"), if (p.vibration) 1 else 0) { p.vibration = it == 1 }))
-            addView(row(ctx, "Grafik kalitesi", toggle(ctx, listOf("DÜŞÜK (hızlı)", "ORTA", "YÜKSEK"), p.quality) { p.quality = it }))
+            addView(row(ctx, "Grafik kalitesi", toggle(ctx, listOf("DÜŞÜK (hızlı)", "ORTA", "YÜKSEK"), p.quality) {
+                p.quality = it
+                runCatching { NativeBridge.nativeSetShadows(p.shadows) }
+            }))
             addView(row(ctx, "Kare hızı", toggle(ctx, listOf("30 FPS (pil)", "60 FPS"), if (p.fps60) 1 else 0) { p.fps60 = it == 1 }))
             addView(row(ctx, "FPS göstergesi", toggle(ctx, listOf("KAPALI", "AÇIK"), if (p.showFps) 1 else 0) { p.showFps = it == 1 }))
-            addView(row(ctx, "Kamera (yakın ↔ uzak)", slider(ctx, 75, 135, p.zoom) {
-                p.zoom = it
-                runCatching { NativeBridge.nativeSetZoom(it / 100f) }
-            }))
-            addView(Ui.label(ctx, "Grafik ayarı bir sonraki oyunda uygulanır.", 12f, Ui.DIM, Gravity.CENTER))
+            addView(row(ctx, "Bakış hassasiyeti", slider(ctx, 40, 200, p.sensitivity) { p.sensitivity = it }))
+            addView(Ui.label(ctx, "Düşük: gölgesiz, %60 çözünürlük • Orta: gölgeli %80 • Yüksek: gölgeli %100", 12f, Ui.DIM, Gravity.CENTER))
             addView(closeButton(ctx, onClose))
         }
     }
@@ -93,51 +93,14 @@ object Panels {
         }
     }
 
-    fun character(ctx: Context, onClose: () -> Unit): View {
-        val p = Game.prefs
-        val cards = ArrayList<View>()
-        fun refresh() = cards.forEachIndexed { i, v -> v.background = Ui.panelBackground(ctx, if (i == p.skin) Ui.ACCENT else 0xFF3A4436.toInt()) }
-        val skins = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            for ((i, pair) in listOf(R.drawable.portrait_soldier to "ASKER CEKETİ", R.drawable.portrait_leather to "DERİ CEKET").withIndex()) {
-                val card = LinearLayout(ctx).apply {
-                    orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER
-                    setPadding(ctx.dp(10f), ctx.dp(8f), ctx.dp(10f), ctx.dp(8f))
-                    addView(ImageView(ctx).apply { setImageResource(pair.first) }, LinearLayout.LayoutParams(ctx.dp(90f), ctx.dp(150f)))
-                    addView(Ui.label(ctx, pair.second, 14f, Ui.TEXT, Gravity.CENTER))
-                }
-                Ui.pressGrow(card, { p.skin = i; refresh() }, 1.06f)
-                cards.add(card)
-                addView(card, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = ctx.dp(10f) })
-            }
-            addView(LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(ctx.dp(10f), 0, 0, 0)
-                addView(Ui.label(ctx, "ENVANTER", 18f, Ui.ACCENT))
-                addView(Ui.label(ctx, "• Yumruk kombosu (3 vuruş)\n• Güçlü tekme (geri iter)\n• Blok kalkanı (basılı tut)\n• Kaçınma atılması\n• 2x İlk yardım çantası", 14f))
-                addView(Ui.label(ctx, "\nTEHDİTLER", 18f, Ui.BLOOD))
-                addView(Ui.label(ctx, "Yürüyen • Koşucu (hızlı)\nAtlayan (uzaktan sıçrar)\nŞişko (ölünce patlar!)", 14f))
-            })
-        }
-        refresh()
-        return Ui.panel(ctx).apply {
-            addView(Ui.label(ctx, "KARAKTER & ENVANTER", 24f, Ui.ACCENT, Gravity.CENTER))
-            addView(skins)
-            addView(Ui.label(ctx, "Toplam leş: ${p.totalKills}   •   En iyi dalga: ${p.bestWave}   •   Rekor skor: ${p.bestScore}", 13f, Ui.DIM, Gravity.CENTER))
-            addView(closeButton(ctx, onClose))
-        }
-    }
-
     fun story(ctx: Context, onStart: () -> Unit, onClose: () -> Unit): View = Ui.panel(ctx).apply {
         addView(Ui.label(ctx, "HİKAYE: SON TAHLİYE", 24f, Ui.ACCENT, Gravity.CENTER))
         addView(Ui.label(ctx,
-            "Şehir düştü. Silahın yok, mermin yok — sadece yumrukların var.\n" +
-            "Kuzeydoğudaki tahliye noktasına ulaşmadan önce 5 dalga\n" +
-            "enfekte sürüsünü geri püskürt. Sonra işaretli bölgeye koş.",
+            "Şehir düştü. Silahın yok, mermin yok — sadece yumrukların ve el fenerin var.\n" +
+            "5 dalga enfekteyi geri püskürt, sonra caddenin kuzey ucundaki\n" +
+            "kırmızı işaret fişeğine koş ve tahliye ol.",
             15f, Ui.TEXT, Gravity.CENTER).apply { setPadding(0, context.dp(8f), 0, context.dp(8f)) })
-        addView(Ui.label(ctx, "İpucu: 3. yumruk kritik vurur • Tekme kalabalığı dağıtır • Şişkolardan uzak dur", 13f, Ui.DIM, Gravity.CENTER))
+        addView(Ui.label(ctx, "Sol: yürü • Sağ: etrafa bak • Yumruk: sol-sağ-güçlü kombo • Blok: basılı tut • Atıl: kaç", 13f, Ui.DIM, Gravity.CENTER))
         addView(LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER

@@ -1,36 +1,36 @@
-//! JNI entry points for `com.woxlium.zombie.NativeBridge` (all static methods).
-//! Only primitive arguments are used, so no JNIEnv calls are needed.
+//! JNI entry points for `com.woxlium.zombie.NativeBridge` (static methods).
 #![allow(non_snake_case)]
 
 use std::os::raw::c_void;
 
-use crate::engine::{self, lock, HUD, INPUT, SETTINGS};
+use crate::assets::android::{AAssetManager_fromJava, ApkSource};
+use crate::engine::{self, lock, ENGINE, HUD, INPUT, SETTINGS};
 use crate::game::HUD_LEN;
 use crate::math::v2;
-use crate::render::TEX_SLOTS;
 
 type Env = *mut c_void;
 type Class = *mut c_void;
 type JBool = u8;
 
-static TEX: std::sync::Mutex<[u32; TEX_SLOTS]> = std::sync::Mutex::new([0; TEX_SLOTS]);
-
+/// Must be called once with the app's AssetManager (kept alive by the app).
 #[no_mangle]
-pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeStart(_: Env, _: Class, mode: i32, skin: i32, seed: i32) {
-    engine::start_game(mode, skin, seed as u32);
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeSetTexture(_: Env, _: Class, slot: i32, id: i32) {
-    if (0..TEX_SLOTS as i32).contains(&slot) {
-        lock(&TEX)[slot as usize] = id as u32;
+pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeInit(env: Env, _: Class, asset_manager: *mut c_void) {
+    let mgr = unsafe { AAssetManager_fromJava(env, asset_manager) };
+    if !mgr.is_null() {
+        engine::set_source(Box::new(ApkSource(mgr as usize)));
     }
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeSurfaceCreated(_: Env, _: Class) {
-    let slots = *lock(&TEX);
-    engine::surface_created(&slots);
+pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeStart(_: Env, _: Class, mode: i32, seed: i32) {
+    engine::start_game(mode, seed as u32);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeSurfaceCreated(_: Env, _: Class) -> JBool {
+    engine::surface_created();
+    let e = lock(&ENGINE);
+    (e.renderer.is_some()) as JBool
 }
 
 #[no_mangle]
@@ -49,6 +49,11 @@ pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeMove(_: Env, _
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeLook(_: Env, _: Class, dx: f32, dy: f32) {
+    lock(&INPUT).look(dx, dy);
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeButton(_: Env, _: Class, id: i32, down: JBool) {
     lock(&INPUT).button(id, down != 0);
 }
@@ -62,14 +67,11 @@ pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativePause(_: Env, 
 pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeHud(_: Env, _: Class, index: i32) -> f32 {
     if (0..HUD_LEN as i32).contains(&index) {
         lock(&HUD)[index as usize]
+    } else if index == HUD_LEN as i32 {
+        lock(&ENGINE).fps
     } else {
         0.0
     }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeSetZoom(_: Env, _: Class, zoom: f32) {
-    lock(&SETTINGS).zoom = zoom.clamp(0.7, 1.5);
 }
 
 #[no_mangle]
@@ -80,4 +82,9 @@ pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeSetMinimap(_: 
 #[no_mangle]
 pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeSetMapExpanded(_: Env, _: Class, expanded: JBool) {
     lock(&SETTINGS).map_expanded = expanded != 0;
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_woxlium_zombie_NativeBridge_nativeSetShadows(_: Env, _: Class, on: JBool) {
+    lock(&SETTINGS).shadows = on != 0;
 }

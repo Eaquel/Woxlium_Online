@@ -23,29 +23,25 @@ class Prefs(context: Context) {
     var showFps: Boolean
         get() = sp.getBoolean("showfps", false)
         set(v) = sp.edit().putBoolean("showfps", v).apply()
-    /** camera distance, percent (80 = closest / biggest characters) */
-    var zoom: Int
-        get() = sp.getInt("zoom", 100)
-        set(v) = sp.edit().putInt("zoom", v).apply()
-    var skin: Int
-        get() = sp.getInt("skin", 0)
-        set(v) = sp.edit().putInt("skin", v).apply()
+    /** look sensitivity, percent */
+    var sensitivity: Int
+        get() = sp.getInt("sens", 100)
+        set(v) = sp.edit().putInt("sens", v).apply()
 
     val renderScale: Float get() = when (quality) { 0 -> 0.6f; 1 -> 0.8f; else -> 1f }
+    val shadows: Boolean get() = quality > 0
 
     // lifetime stats
     val totalKills get() = sp.getInt("kills", 0)
-    val kickKills get() = sp.getInt("kickKills", 0)
     val bestWave get() = sp.getInt("bestWave", 0)
     val bestScore get() = sp.getInt("bestScore", 0)
     val bestCombo get() = sp.getInt("bestCombo", 0)
     val storyWins get() = sp.getInt("storyWins", 0)
     val games get() = sp.getInt("games", 0)
 
-    fun recordGame(kills: Int, kick: Int, wave: Int, score: Int, combo: Int, storyWin: Boolean, endless: Boolean) {
+    fun recordGame(kills: Int, wave: Int, score: Int, combo: Int, storyWin: Boolean, endless: Boolean) {
         sp.edit()
             .putInt("kills", totalKills + kills)
-            .putInt("kickKills", kickKills + kick)
             .putInt("bestWave", if (endless) maxOf(bestWave, wave) else bestWave)
             .putInt("bestScore", maxOf(bestScore, score))
             .putInt("bestCombo", maxOf(bestCombo, combo))
@@ -62,7 +58,7 @@ class Prefs(context: Context) {
         Quest("İLK KAN", "1 zombi öldür", totalKills, 1),
         Quest("KASAP", "Toplam 100 zombi öldür", totalKills, 100),
         Quest("SOKAK SAVAŞÇISI", "Toplam 500 zombi öldür", totalKills, 500),
-        Quest("TEKMECİ", "Tekme ile 25 zombi bitir", kickKills, 25),
+        Quest("REKORTMEN", "Tek oyunda 5000 puan topla", bestScore, 5000),
         Quest("KOMBO USTASI", "Tek seferde 15'li kombo yap", bestCombo, 15),
         Quest("HAYATTA KALAN", "Sonsuz Dalga'da 5. dalgaya ulaş", bestWave, 5),
         Quest("EFSANE", "Sonsuz Dalga'da 10. dalgaya ulaş", bestWave, 10),

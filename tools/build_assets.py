@@ -1,511 +1,365 @@
 #!/usr/bin/env python3
-"""Woxlium asset pipeline.
+"""Woxlium asset pipeline (first-person 3D build).
 
-Turns the concept sheets in art/source (green-screen sprite sheets) into the
-optimized runtime assets used by the game:
+Inputs
+  build/wxm/*.wxm, textures_*.json      characters from tools/blender/wxm_export.py
+  build/wxm_props/*.wxm, textures_props  props from tools/blender/props_export.py
+  $ROCKETBOX                           Microsoft Rocketbox Assets/ dir (MIT) for avatar textures
+  $PH_TEX                              Poly Haven texture downloads (CC0): ground/walls + sky.jpg
+  art/source/*.jpg                     the provided concept sheets (VFX + UI)
 
-  app/src/main/assets/sprites.webp   one 2048x2048 atlas: characters, VFX, decals
-  app/src/main/assets/tex_*.webp     256x256 seamless ground / wall textures
-  app/src/main/res/drawable-nodpi/   UI buttons and HUD icons (WebP)
-  rust/woxlium_core/src/atlas_gen.rs frame table consumed by the Rust renderer
-  build/preview_assets/*.rgba        raw copies for the desktop preview harness
-
-Run: python3 tools/build_assets.py
+Outputs
+  app/src/main/assets/*.wxm            meshes, skeletons, animation clips
+  app/src/main/assets/*.pvr            ETC2 (+mips) textures, compressed with etcpak
+  app/src/main/res/drawable-nodpi/     UI buttons and icons
+  rust/woxlium_core/src/assets_gen.rs  texture / material / model tables
+  build/preview_assets/                identical files for the desktop harness
 """
+import json
 import os
+import shutil
+import subprocess
 import sys
 
 import numpy as np
-from PIL import Image, ImageFilter
-from scipy import ndimage as nd
+from PIL import Image, ImageDraw, ImageFilter
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "art", "source")
-ASSETS = os.path.join(ROOT, "app", "src", "main", "assets")
-DRAWABLE = os.path.join(ROOT, "app", "src", "main", "res", "drawable-nodpi")
-RUST_GEN = os.path.join(ROOT, "rust", "woxlium_core", "src", "atlas_gen.rs")
-PREVIEW = os.path.join(ROOT, "build", "preview_assets")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sheets  # noqa: E402
 
-ATLAS = 2048
-CHAR_REF_PX = 190  # standing character height inside the atlas
+ROOT = sheets.ROOT
+ASSETS = sheets.ASSETS
+DRAWABLE = sheets.DRAWABLE
+PREVIEW = sheets.PREVIEW
+GEN = os.path.join(ROOT, "rust", "woxlium_core", "src", "assets_gen.rs")
+WXM = os.path.join(ROOT, "build", "wxm")
+WXM_PROPS = os.path.join(ROOT, "build", "wxm_props")
+ROCKETBOX = os.environ.get("ROCKETBOX", os.path.join(ROOT, "build", "dl", "rocketbox", "Assets"))
+PH_TEX = os.environ.get("PH_TEX", os.path.join(ROOT, "build", "dl", "tex"))
+ETCPAK = os.environ.get("ETCPAK", "etcpak")
+TMP = os.path.join(ROOT, "build", "tex_tmp")
+
+AVATAR_DIRS = {"zombie_a": "Male_Adult_07", "zombie_b": "Male_Adult_12", "zombie_c": "Male_Adult_04",
+               "zombie_d": "Male_Adult_18", "player_arms": "Male_Adult_05"}
+PROPS = ["concrete_road_barrier", "covered_car", "street_lamp_01", "old_tyre", "trashbag", "metal_trash_can",
+         "wooden_crate_01", "medical_box", "facade_a", "facade_b", "utility_box_01", "fire_hydrant",
+         "dead_tree_trunk", "Barrel_01"]
+SURFACES = {  # name -> (poly haven id, albedo size)
+    "road": ("road_damaged", 1024), "sidewalk": ("concrete_pavement", 1024), "mud": ("muddy_tracks", 1024),
+    "rubble": ("rubble", 1024), "grass": ("sparse_grass", 1024), "wall": ("cracked_concrete_wall", 1024),
+    "wall2": ("concrete_wall_008", 1024), "plaster": ("worn_cracked_plaster", 1024),
+}
+
+textures = []   # (file, flags)
+materials = []  # (name, albedo idx, normal idx, flags)
+MAT_ALPHA = 1
+MAT_EMISSIVE = 2
+MAT_SKIN = 4
 
 
-def load(name):
-    return np.asarray(Image.open(os.path.join(SRC, name)).convert("RGB")).astype(np.float32)
+def tex_index(name):
+    for i, (n, _) in enumerate(textures):
+        if n == name:
+            return i
+    raise KeyError(name)
 
 
-def sample_bg(a):
-    # median of the outermost pixel ring = backdrop colour
-    ring = np.concatenate([a[2, :], a[-3, :], a[:, 2], a[:, -3]])
-    return np.median(ring, axis=0)
+def write_pvr(img, name, rgba=False, mips=True):
+    """Compress with etcpak (ETC2 RGB / RGBA + mip chain) into assets + preview."""
+    os.makedirs(TMP, exist_ok=True)
+    png = os.path.join(TMP, name + ".png")
+    img.convert("RGBA" if rgba else "RGB").save(png)
+    out = os.path.join(ASSETS, name + ".pvr")
+    args = [ETCPAK, "-c", "etc2_rgba" if rgba else "etc2_rgb"] + (["-m"] if mips else []) + [png, out]
+    subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    shutil.copy(out, os.path.join(PREVIEW, name + ".pvr"))
+    textures.append((name + ".pvr", 1 if rgba else 0))
+    return len(textures) - 1
 
 
-def key_character(a, bg):
-    """Green-screen key tuned for opaque characters (keeps grey / olive cloth)."""
+def ao_mul(diff, arm_path, strength=0.85):
+    if not arm_path or not os.path.exists(arm_path):
+        return diff
+    ao = np.asarray(Image.open(arm_path).convert("RGB").resize(diff.size, Image.LANCZOS)).astype(np.float32)[..., 0:1] / 255.0
+    d = np.asarray(diff.convert("RGB")).astype(np.float32)
+    return Image.fromarray((d * (1 - strength + strength * ao)).clip(0, 255).astype(np.uint8))
+
+
+# ------------------------------------------------------------------ zombify
+def skin_mask(a):
     r, g, b = a[..., 0], a[..., 1], a[..., 2]
-    dist = np.abs(a - bg).sum(-1)
-    green = g - np.maximum(r, b)
-    bg_green = bg[1] - max(bg[0], bg[2])
-    alpha = np.maximum(dist / 70.0, (bg_green - green) / 14.0)
-    alpha = np.clip(alpha - 0.25, 0, 1) / 0.75
-    # despill: pull green down towards the other channels on soft edges
-    out = a.copy()
-    lim = np.maximum(r, b) + 6
-    out[..., 1] = np.where(alpha < 0.98, np.minimum(g, lim), g)
-    return out, alpha
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    sat = (mx - mn) / np.maximum(mx, 1)
+    m = (r > g) & (g > b * 0.95) & (sat > 0.18) & (sat < 0.72) & (mx > 60) & ((r - g) > 12)
+    m = m.astype(np.float32)
+    return np.asarray(Image.fromarray((m * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(3))).astype(np.float32) / 255.0
 
 
-def key_vfx(a, bg, soft=150.0):
-    """Difference matte for glowing / translucent effects, un-premultiplied."""
-    dist = np.abs(a - bg).sum(-1)
-    alpha = np.clip((dist - 18) / soft, 0, 1)
-    safe = np.maximum(alpha, 1e-3)[..., None]
-    col = (a - bg[None, None, :] * (1 - alpha[..., None])) / safe
-    return np.clip(col, 0, 255), alpha
-
-
-def strip_small(alpha, min_frac=0.02, thr=0.35):
-    """Drop tiny islands (frame numbers, border remnants)."""
-    m = alpha > thr
-    lab, n = nd.label(m)
-    if n == 0:
-        return alpha
-    sizes = nd.sum(m, lab, range(1, n + 1))
-    keep_ids = [i + 1 for i, s in enumerate(sizes) if s >= max(sizes) * min_frac and s > 40]
-    keep = np.isin(lab, keep_ids)
-    keep = nd.binary_dilation(keep, iterations=3)
-    return alpha * keep
-
-
-def trim(col, alpha, pad=2):
-    ys, xs = np.where(alpha > 0.04)
-    if len(xs) == 0:
-        return None
-    x0, x1 = max(xs.min() - pad, 0), min(xs.max() + pad + 1, alpha.shape[1])
-    y0, y1 = max(ys.min() - pad, 0), min(ys.max() + pad + 1, alpha.shape[0])
-    return col[y0:y1, x0:x1], alpha[y0:y1, x0:x1]
-
-
-def to_image(col, alpha):
-    rgba = np.dstack([col, alpha * 255]).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(rgba, "RGBA")
-
-
-def grid(xs, ys, inset=6):
-    cells = []
-    for (y0, y1) in ys:
-        for (x0, x1) in xs:
-            cells.append((x0 + inset, y0 + inset, x1 - inset, y1 - inset))
-    return cells
-
-
-def extract_chars(sheet, cells, pick=None):
-    a = load(sheet)
-    bg = sample_bg(a)
+def blood_stamps():
+    """Splatter shapes cut from the provided blood VFX sheet."""
+    cells = sheets.blood_vfx_cells()
     out = []
-    for i, (x0, y0, x1, y1) in enumerate(cells):
-        if pick is not None and i not in pick:
-            continue
-        sub = a[y0:y1, x0:x1]
-        col, alpha = key_character(sub, bg)
-        alpha[:30, :34] = 0  # frame numbers live in the top-left corner
-        alpha = strip_small(alpha, 0.04)
-        t = trim(col, alpha)
-        out.append(t)
-    if pick is not None:
-        order = {p: k for k, p in enumerate(pick)}
-        idx = sorted(range(len(out)), key=lambda k: k)
-        out = [out[i] for i in idx]
+    for row in (0, 2, 3):
+        for c, a in sheets.extract_vfx("vfx_blood.jpg", cells[row], soft=110.0, label_safe=False)[1:6]:
+            out.append((c, a))
     return out
 
 
-def extract_vfx(sheet, cells, soft=150.0, label_safe=True):
-    a = load(sheet)
-    bg = sample_bg(a)
-    out = []
-    for (x0, y0, x1, y1) in cells:
-        col, alpha = key_vfx(a[y0:y1, x0:x1], bg, soft)
-        if label_safe:
-            # soft edge fade hides frame numbers / row titles without hard notches
-            hh, ww = alpha.shape
-            yy, xx = np.mgrid[0:hh, 0:ww]
-            edge = np.minimum(np.minimum(xx, ww - 1 - xx), np.minimum(yy, hh - 1 - yy))
-            alpha = alpha * np.clip((edge - 10) / 16.0, 0, 1)
-        t = trim(col, alpha, pad=3)
-        if t is not None:
-            out.append(t)
-    return out
+def noise(size, seed, scale):
+    rng = np.random.default_rng(seed)
+    small = rng.random((max(2, size // scale), max(2, size // scale))).astype(np.float32)
+    im = Image.fromarray((small * 255).astype(np.uint8)).resize((size, size), Image.BICUBIC).filter(ImageFilter.GaussianBlur(size / scale * 0.6))
+    a = np.asarray(im).astype(np.float32) / 255.0
+    return (a - a.min()) / max(a.max() - a.min(), 1e-3)
 
 
-# ---------------------------------------------------------------- sheets
-Z_COLS = [(17, 237), (248, 469), (478, 699), (708, 929), (938, 1159), (1170, 1390)]
-Z_ROWS = [(16, 192), (206, 383), (397, 575), (575, 766)]
-P_COLS = [(21, 264), (275, 499), (509, 716), (729, 943), (953, 1172), (1185, 1391)]
-P_ROWS = [(14, 388), (397, 765)]
-
-ZG = grid(Z_COLS, Z_ROWS)
-PG = grid(P_COLS, P_ROWS)
-
-
-def death_cells():
-    c = P_COLS
-    cells = [(c[i][0], 14, c[i][1], 388) for i in range(4)]
-    cells += [(c[4][0], 14, c[4][1], 199), (c[5][0], 14, c[5][1], 199)]
-    cells += [(c[4][0], 207, c[4][1], 388), (c[5][0], 207, c[5][1], 388)]
-    cells += [(x0, 397, x1, 579) for (x0, x1) in c]
-    cells += [(x0, 588, x1, 765) for (x0, x1) in c]
-    return [(x0 + 6, y0 + 6, x1 - 6, y1 - 6) for (x0, y0, x1, y1) in cells]
-
-
-def combat_vfx_cells():
-    """Rows of the combat VFX sheet; first sequence (left half) of each row."""
-    a = load("vfx_combat.jpg")
-    lum = a.mean(-1)
-    bands = [(30, 108), (128, 206), (226, 301), (321, 394), (411, 486), (491, 579), (584, 672), (678, 765)]
-    rows = []
-    for (y0, y1) in bands:
-        band = lum[y0 + 4:y1 - 4, :714]
-        dark = (band < 50).mean(0) > 0.6
-        xs = np.where(dark)[0]
-        lines = []
-        for x in xs:
-            if not lines or x - lines[-1][-1] > 2:
-                lines.append([x])
-            else:
-                lines[-1].append(x)
-        lines = [int(np.mean(l)) for l in lines]
-        if lines[0] > 30:
-            lines = [21] + lines
-        if lines[-1] < 700:
-            lines.append(714)
-        cells = []
-        for l0, l1 in zip(lines, lines[1:]):
-            if l1 - l0 > 40:
-                cells.append((l0 + 5, y0 + 5, l1 - 5, y1 - 5))
-        rows.append(cells)
-    return rows
-
-
-def blood_vfx_cells():
-    bands = [(0, 150), (150, 270), (270, 390), (390, 500), (500, 655), (655, 768)]
-    xs = [(i * 170, i * 170 + 170) for i in range(6)] + [(1020, 1250)]
-    return [[(x0, y0, x1, y1) for (x0, x1) in xs] for (y0, y1) in bands]
-
-
-# ---------------------------------------------------------------- packing
-class Packer:
-    def __init__(self, size):
-        self.size = size
-        self.x = self.y = self.row_h = 0
-        self.pad = 2
-
-    def place(self, w, h):
-        if self.x + w + self.pad > self.size:
-            self.x = 0
-            self.y += self.row_h + self.pad
-            self.row_h = 0
-        if self.y + h > self.size:
-            raise RuntimeError("atlas overflow")
-        p = (self.x, self.y)
-        self.x += w + self.pad
-        self.row_h = max(self.row_h, h)
-        return p
-
-
-def scaled(frames, scale):
-    res = []
-    for col, alpha in frames:
-        img = to_image(col, alpha)
-        w = max(1, int(round(img.width * scale)))
-        h = max(1, int(round(img.height * scale)))
-        res.append(img.resize((w, h), Image.LANCZOS))
+def zombify(img, seed, head=False, amount=1.0, blood=True):
+    size = img.size[0]
+    a = np.asarray(img.convert("RGB")).astype(np.float32)
+    sk = skin_mask(a)[..., None] * amount
+    lum = a.mean(-1, keepdims=True)
+    # skin: pale, grey-green, bruised blotches and dark veins
+    blot = noise(size, seed, 40)[..., None]
+    vn = noise(size, seed + 1, 18)[..., None]
+    veins = np.clip(1 - np.abs(vn - 0.5) * 18, 0, 1) * 0.28
+    dead = lum * np.array([0.78, 0.86, 0.70]) * (0.85 + 0.3 * blot) + 12
+    dead = dead * (1 - veins) + veins * np.array([60, 40, 60])
+    bruise = np.clip((blot - 0.7) * 2.5, 0, 1) * 0.4
+    dead = dead * (1 - bruise) + bruise * np.array([95, 70, 85])
+    out = a * (1 - sk) + dead * sk
+    # clothes: grime + fading
+    grime = noise(size, seed + 2, 28)[..., None]
+    out = out * (1 - (1 - sk) * (0.22 * grime + 0.06))
+    out = out * 0.92 + out.mean(-1, keepdims=True) * 0.08
+    rng = np.random.default_rng(seed)
+    stamps = blood_stamps()
+    res = Image.fromarray(out.clip(0, 255).astype(np.uint8))
+    n = (5 if head else 14) if blood else 0
+    for _ in range(n):
+        c, al = stamps[rng.integers(len(stamps))]
+        s = rng.uniform(0.10, 0.28) * size if not head else rng.uniform(0.08, 0.16) * size
+        st = sheets.to_image(c * np.array([0.6, 0.15, 0.12]), al).resize((int(s), int(s * al.shape[0] / al.shape[1]) or 1), Image.LANCZOS)
+        st = st.rotate(rng.uniform(0, 360), expand=True)
+        if head:
+            # around mouth / chin of the Rocketbox face layout
+            x = int(size * rng.uniform(0.38, 0.6) - st.width / 2)
+            y = int(size * rng.uniform(0.38, 0.52) - st.height / 2)
+        else:
+            x = int(rng.uniform(0, size - st.width))
+            y = int(rng.uniform(0, size - st.height))
+        res.alpha_composite(st, (x, y)) if res.mode == "RGBA" else res.paste(st, (x, y), st)
+    if head:
+        # milky dead eyes: whiten iris tile (bottom-centre of the head atlas)
+        r = np.asarray(res).astype(np.float32)
+        y0, y1, x0, x1 = int(size * 0.83), int(size * 0.98), int(size * 0.2), int(size * 0.36)
+        tile = r[y0:y1, x0:x1]
+        tl = tile.mean(-1, keepdims=True)
+        sat = (tile.max(-1, keepdims=True) - tile.min(-1, keepdims=True)) / 255.0
+        iris = np.clip((sat - 0.12) * 4 + (150 - tl) / 120, 0, 1)
+        pale = tl * 0.35 + np.array([170, 172, 158])
+        r[y0:y1, x0:x1] = tile * (1 - iris * 0.85) + pale * iris * 0.85
+        # dark sockets
+        yy, xx = np.mgrid[0:size, 0:size] / size
+        for ex in (0.42, 0.58):
+            d = ((xx - ex) / 0.07) ** 2 + ((yy - 0.27) / 0.035) ** 2
+            k = np.clip(1.2 - d, 0, 1)[..., None] * 0.55
+            r = r * (1 - k) + np.array([40, 25, 30]) * k
+        res = Image.fromarray(r.clip(0, 255).astype(np.uint8))
     return res
 
 
-def anchor_x(img, lower=True):
-    a = np.asarray(img)[..., 3].astype(np.float32)
-    if lower:
-        a = a[int(a.shape[0] * 0.55):, :]
-    s = a.sum()
-    if s <= 0:
-        return 0.5
-    return float((a.sum(0) * np.arange(a.shape[1])).sum() / s / img.width)
+# ------------------------------------------------------------------ builders
+def build_characters():
+    models = []
+    for ch, avatar in AVATAR_DIRS.items():
+        src = os.path.join(WXM, ch + ".wxm")
+        shutil.copy(src, os.path.join(ASSETS, ch + ".wxm"))
+        shutil.copy(src, os.path.join(PREVIEW, ch + ".wxm"))
+        models.append(ch + ".wxm")
+        tdir = os.path.join(ROCKETBOX, "Avatars", "Adults", avatar, "Textures")
+        code = [f for f in os.listdir(tdir) if f.endswith("_body_color.tga")][0].split("_")[0]
+        seed = sum(map(ord, ch))
+        zombie = ch.startswith("zombie")
+        for part, size, nsize in (("body", 1024, 1024), ("head", 512, 512)):
+            col = Image.open(os.path.join(tdir, f"{code}_{part}_color.tga")).convert("RGB").resize((size, size), Image.LANCZOS)
+            if zombie:
+                col = zombify(col, seed + (7 if part == "head" else 0), head=part == "head")
+            else:
+                # survivor: same person, just dirtier knuckles / sleeves
+                col = zombify(col, seed, head=False, amount=0.0, blood=False)
+            ai = write_pvr(col, f"{ch}_{part}")
+            nrm = Image.open(os.path.join(tdir, f"{code}_{part}_normal.tga")).convert("RGB").resize((nsize // 2, nsize // 2), Image.LANCZOS)
+            ni = write_pvr(nrm, f"{ch}_{part}_n")
+            materials.append((f"{code}_{part}", ai, ni, MAT_SKIN))
+        opath = os.path.join(tdir, f"{code}_opacity_color.tga")
+        if os.path.exists(opath):
+            op = Image.open(opath).convert("RGBA").resize((256, 256), Image.LANCZOS)
+            oi = write_pvr(op, f"{ch}_opacity", rgba=True)
+            materials.append((f"{code}_opacity", oi, -1, MAT_ALPHA))
+    return models
 
 
-def soft_disc(size):
-    yy, xx = np.mgrid[0:size, 0:size]
-    r = np.hypot(xx - size / 2 + 0.5, yy - size / 2 + 0.5) / (size / 2)
-    al = np.clip(1 - r, 0, 1) ** 1.6
-    rgba = np.dstack([np.full_like(al, 255)] * 3 + [al * 255]).astype(np.uint8)
-    return Image.fromarray(rgba, "RGBA")
+def build_props():
+    meta = json.load(open(os.path.join(WXM_PROPS, "textures_props.json")))
+    meta.update(json.load(open(os.path.join(WXM_PROPS, "textures_facades.json"))))
+    models = []
+    done = {}
+    for p in PROPS:
+        shutil.copy(os.path.join(WXM_PROPS, p + ".wxm"), os.path.join(ASSETS, p + ".wxm"))
+        shutil.copy(os.path.join(WXM_PROPS, p + ".wxm"), os.path.join(PREVIEW, p + ".wxm"))
+        models.append(p + ".wxm")
+        for mat, files in meta[p]["materials"].items():
+            diff = next((f for f in files if "_diff_" in f), None)
+            nor = next((f for f in files if "_nor_gl_" in f), None)
+            arm = next((f for f in files if "_arm_" in f), None)
+            flags = MAT_EMISSIVE if ("bulb" in mat or "glass" in mat and "lamp" in mat) else 0
+            key = (diff, nor)
+            if key not in done:
+                size = 1024 if p.startswith("facade") else 512
+                base = os.path.basename(diff).replace("_diff_1k.jpg", "")
+                d = ao_mul(Image.open(diff).convert("RGB").resize((size, size), Image.LANCZOS), arm)
+                ai = write_pvr(d, "p_" + base)
+                ni = write_pvr(Image.open(nor).convert("RGB").resize((size // 2, size // 2), Image.LANCZOS), "p_" + base + "_n")
+                done[key] = (ai, ni)
+            ai, ni = done[key]
+            materials.append((mat, ai, ni, flags))
+    return models, {p: meta[p]["size"] for p in PROPS}
 
 
-def ring(size):
-    yy, xx = np.mgrid[0:size, 0:size]
-    r = np.hypot(xx - size / 2 + 0.5, yy - size / 2 + 0.5) / (size / 2)
-    al = np.clip(1 - np.abs(r - 0.82) / 0.12, 0, 1)
-    rgba = np.dstack([np.full_like(al, 255)] * 3 + [al * 255]).astype(np.uint8)
-    return Image.fromarray(rgba, "RGBA")
+def build_surfaces():
+    for name, (pid, size) in SURFACES.items():
+        d = Image.open(os.path.join(PH_TEX, f"{pid}_Diffuse.jpg")).convert("RGB").resize((size, size), Image.LANCZOS)
+        d = ao_mul(d, os.path.join(PH_TEX, f"{pid}_AO.jpg"), 0.7)
+        ai = write_pvr(d, "s_" + name)
+        n = Image.open(os.path.join(PH_TEX, f"{pid}_nor_gl.jpg")).convert("RGB").resize((size // 2, size // 2), Image.LANCZOS)
+        ni = write_pvr(n, "s_" + name + "_n")
+        materials.append(("surface_" + name, ai, ni, 0))
+    sky = Image.open(os.path.join(PH_TEX, "sky.jpg")).convert("RGB")
+    # night grade: darker, cold, keep the overcast structure
+    s = np.asarray(sky).astype(np.float32)
+    s = s * np.array([0.42, 0.46, 0.55]) + 4
+    write_pvr(Image.fromarray(s.clip(0, 255).astype(np.uint8)), "sky", mips=False)
 
 
-def arrow(size):
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    from PIL import ImageDraw
-    d = ImageDraw.Draw(img)
-    d.polygon([(size / 2, 2), (size - 6, size - 4), (size / 2, size * 0.7), (6, size - 4)], fill=(255, 255, 255, 255))
-    return img
-
-
-def build_sprites():
-    anims = []  # (name, kind, [images], [anchors])
-
-    def char_anim(name, frames, ref_h, lower=True):
-        imgs = scaled(frames, CHAR_REF_PX / ref_h)
-        anims.append((name, "char", imgs, [anchor_x(i, lower) for i in imgs], CHAR_REF_PX))
-
-    # ---- player
-    pt = extract_chars("player_turnaround.jpg", PG)
-    ref_p = pt[0][1].shape[0]
-    char_anim("P_TURN", pt, ref_p)
-    pp = extract_chars("player_punch.jpg", PG)
-    char_anim("P_PUNCH", pp, pp[0][1].shape[0])
-    pd = extract_chars("player_death.jpg", death_cells())
-    pd = [pd[i] for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 18]]
-    char_anim("P_DEATH", pd, ref_p * 1.0, lower=False)
-
-    # ---- zombie
-    zt = extract_chars("zombie_turnaround.jpg", grid(
-        [(0, 235), (235, 470), (470, 705), (705, 940), (940, 1175), (1175, 1408)], [(0, 384), (384, 768)], inset=2))
-    ref_z = zt[0][1].shape[0]
-    char_anim("Z_TURN", zt, ref_z)
-    zw = extract_chars("zombie_walk.jpg", ZG)
-    ref_zw = zw[0][1].shape[0]
-    walk = [zw[i] for i in [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23]][::2]
-    char_anim("Z_WALK", walk, ref_zw)
-    char_anim("Z_IDLE", [zw[0]], ref_zw)
-    zr = extract_chars("zombie_run.jpg", ZG)
-    char_anim("Z_RUN", zr[1:][::2], zr[0][1].shape[0])
-    zl = extract_chars("zombie_lunge.jpg", ZG)
-    char_anim("Z_LUNGE", [zl[i] for i in [1, 2, 3, 4, 5, 6, 10, 12, 13, 14, 15, 16, 18, 20, 22]], zl[0][1].shape[0])
-    zd = extract_chars("zombie_death.jpg", ZG)
-    char_anim("Z_DEATH", [zd[i] for i in [1, 2, 4, 6, 8, 10, 12, 13, 14, 15, 16, 17, 18, 23]], zd[0][1].shape[0], lower=False)
-
-    # ---- vfx
+def build_vfx():
+    """Blood / impact / dust / shockwave flipbooks from the provided sheets."""
+    anims = []
     names = ["V_SPARK", "V_SLASH", "V_DUST", "V_SWEAT", "V_SHOCK", "V_SHIELD", "V_HEAL", "V_SMOKE"]
-    for name, cells in zip(names, combat_vfx_cells()):
-        fr = extract_vfx("vfx_combat.jpg", cells)
-        imgs = [to_image(c, a) for c, a in fr]
-        ref = max(max(i.width, i.height) for i in imgs)
-        imgs = [i.resize((max(1, int(i.width * 96 / ref)), max(1, int(i.height * 96 / ref))), Image.LANCZOS) for i in imgs]
-        anims.append((name, "vfx", imgs, [0.5] * len(imgs), 96))
-    bnames = ["V_BLOOD", "V_CLAW", "V_POOL", "V_SPRAY", "V_GAS", "V_PUKE"]
-    for name, cells in zip(bnames, blood_vfx_cells()):
-        fr = extract_vfx("vfx_blood.jpg", cells, soft=110.0, label_safe=False)
-        imgs = [to_image(c, a) for c, a in fr]
-        ref = max(max(i.width, i.height) for i in imgs)
-        imgs = [i.resize((max(1, int(i.width * 110 / ref)), max(1, int(i.height * 110 / ref))), Image.LANCZOS) for i in imgs]
-        anims.append((name, "vfx", imgs, [0.5] * len(imgs), 110))
-
-    # ---- procedural helpers
-    anims.append(("G_DISC", "vfx", [soft_disc(64)], [0.5], 64))
-    anims.append(("G_RING", "vfx", [ring(64)], [0.5], 64))
-    anims.append(("G_ARROW", "vfx", [arrow(32)], [0.5], 32))
-    white = Image.new("RGBA", (8, 8), (255, 255, 255, 255))
-    anims.append(("G_WHITE", "vfx", [white], [0.5], 8))
-
-    # ---- pickup icon (medkit) from the UI sheet
-    ui = Image.open(os.path.join(SRC, "ui_buttons.jpg")).convert("RGB")
-    med = icon_from_ui(ui, (1079, 424, 65, 60))
-    anims.append(("I_MEDKIT", "vfx", [med.resize((64, 60), Image.LANCZOS)], [0.5], 64))
-
-    # ---- pack (tallest first gives tight shelves)
-    atlas = Image.new("RGBA", (ATLAS, ATLAS), (0, 0, 0, 0))
+    for name, cells in zip(names, sheets.combat_vfx_cells()):
+        if name in ("V_SWEAT", "V_HEAL"):
+            continue
+        fr = sheets.extract_vfx("vfx_combat.jpg", cells)
+        anims.append((name, [sheets.to_image(c, a) for c, a in fr], 80))
+    for name, cells in zip(["V_BLOOD", "V_CLAW", "V_POOL", "V_SPRAY", "V_GAS", "V_PUKE"], sheets.blood_vfx_cells()):
+        if name in ("V_GAS", "V_PUKE"):
+            continue
+        fr = sheets.extract_vfx("vfx_blood.jpg", cells, soft=110.0, label_safe=False)
+        anims.append((name, [sheets.to_image(c, a) for c, a in fr], 100))
+    anims.append(("G_DISC", [sheets.soft_disc(64)], 64))
+    anims.append(("G_RING", [sheets.ring(64)], 64))
+    anims.append(("G_ARROW", [sheets.arrow(32)], 32))
+    anims.append(("G_WHITE", [Image.new("RGBA", (8, 8), (255, 255, 255, 255))], 8))
+    size = 1024
+    atlas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    pk = sheets.Packer(size)
     items = []
-    for ai, (name, kind, imgs, anch, ref) in enumerate(anims):
-        for fi, img in enumerate(imgs):
-            items.append((img.height, ai, fi))
+    for ai, (name, imgs, px) in enumerate(anims):
+        ref = max(max(i.width, i.height) for i in imgs)
+        scaled = [i.resize((max(1, int(i.width * px / ref)), max(1, int(i.height * px / ref))), Image.LANCZOS) if ref > px else i for i in imgs]
+        anims[ai] = (name, scaled, max(max(i.width, i.height) for i in scaled))
+        for fi, im in enumerate(scaled):
+            items.append((im.height, ai, fi))
     items.sort(reverse=True)
-    pk = Packer(ATLAS)
     pos = {}
-    for h, ai, fi in items:
-        img = anims[ai][2][fi]
-        pos[(ai, fi)] = pk.place(img.width, img.height)
-        atlas.paste(img, pos[(ai, fi)])
-    print("atlas used rows up to", pk.y + pk.row_h, "of", ATLAS)
-
-    # bleed colour into transparent texels so bilinear filtering has no dark halos
-    arr = np.asarray(atlas).astype(np.float32)
-    al = arr[..., 3:4] / 255.0
-    col = arr[..., :3]
-    blur_c = np.asarray(Image.fromarray((col * al).astype(np.uint8)).filter(ImageFilter.BoxBlur(2))).astype(np.float32)
-    blur_a = np.asarray(Image.fromarray((al[..., 0] * 255).astype(np.uint8)).filter(ImageFilter.BoxBlur(2))).astype(np.float32)[..., None] / 255.0
-    fill = blur_c / np.maximum(blur_a, 1e-3)
-    col = np.where(al > 0.02, col, fill)
-    atlas = Image.fromarray(np.dstack([col, arr[..., 3]]).clip(0, 255).astype(np.uint8), "RGBA")
-
-    os.makedirs(ASSETS, exist_ok=True)
-    atlas.save(os.path.join(ASSETS, "sprites.webp"), "WEBP", quality=88, method=6, alpha_quality=90)
-    save_preview_raw(atlas, "sprites")
-
-    # ---- rust frame table
-    lines = ["// @generated by tools/build_assets.py — do not edit.", "",
-             "/// One atlas sub-image. u/v in [0,1]; w/h relative to the animation reference size;",
-             "/// ax = horizontal anchor (0 = left edge, 1 = right edge), feet/centre at the anchor.",
-             "#[derive(Clone, Copy, Debug)]",
-             "pub struct Frame { pub u0: f32, pub v0: f32, pub u1: f32, pub v1: f32, pub w: f32, pub h: f32, pub ax: f32 }",
-             "", "pub const ATLAS_SIZE: u32 = %d;" % ATLAS, ""]
-    offset = 0
-    frames = []
-    for ai, (name, kind, imgs, anch, ref) in enumerate(anims):
-        lines.append("pub const %s: (usize, usize) = (%d, %d);" % (name, offset, len(imgs)))
-        for fi, img in enumerate(imgs):
+    for _, ai, fi in items:
+        im = anims[ai][1][fi]
+        pos[(ai, fi)] = pk.place(im.width, im.height)
+        atlas.paste(im, pos[(ai, fi)])
+    # premultiply (GL blending is ONE, ONE_MINUS_SRC_ALPHA)
+    a = np.asarray(atlas).astype(np.float32)
+    a[..., :3] *= a[..., 3:4] / 255.0
+    write_pvr(Image.fromarray(a.astype(np.uint8), "RGBA"), "vfx", rgba=True)
+    lines = ["pub const VFX_FRAMES: &[[f32; 6]] = &["]
+    consts = []
+    off = 0
+    for ai, (name, imgs, ref) in enumerate(anims):
+        consts.append(f"pub const {name}: (usize, usize) = ({off}, {len(imgs)});")
+        for fi, im in enumerate(imgs):
             x, y = pos[(ai, fi)]
-            frames.append("    Frame { u0: %.6f, v0: %.6f, u1: %.6f, v1: %.6f, w: %.4f, h: %.4f, ax: %.4f }," % (
-                (x + 0.5) / ATLAS, (y + 0.5) / ATLAS, (x + img.width - 0.5) / ATLAS, (y + img.height - 0.5) / ATLAS,
-                img.width / ref, img.height / ref, anch[fi]))
-        offset += len(imgs)
-    lines.append("")
-    lines.append("pub static FRAMES: [Frame; %d] = [" % offset)
-    lines += frames
+            lines.append(f"    [{(x + .5) / size:.5f}, {(y + .5) / size:.5f}, {(x + im.width - .5) / size:.5f}, {(y + im.height - .5) / size:.5f}, {im.width / ref:.4f}, {im.height / ref:.4f}],")
+        off += len(imgs)
     lines.append("];")
-    with open(RUST_GEN, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    print("frames:", offset)
+    return consts + lines
 
 
-def icon_from_ui(ui, rect, circle=True):
-    x, y, w, h = rect
-    pad = 3
-    sub = np.asarray(ui.crop((x - pad, y - pad, x + w + pad, y + h + pad))).astype(np.float32)
-    bg = np.array([89, 122, 92], np.float32)
-    col, alpha = key_character(sub, bg)
-    alpha = strip_small(alpha, 0.2)
-    if circle:
-        hh, ww = alpha.shape
-        yy, xx = np.mgrid[0:hh, 0:ww]
-        r = np.hypot((xx - ww / 2) / (ww / 2), (yy - hh / 2) / (hh / 2))
-        alpha = alpha * np.clip((1.0 - r) * 12, 0, 1)
-    return to_image(col, alpha)
-
-
-# ---------------------------------------------------------------- textures
-def seamless(img):
-    a = np.asarray(img).astype(np.float32)
-    h, w = a.shape[:2]
-    sh = np.roll(np.roll(a, h // 2, 0), w // 2, 1)
-    yy, xx = np.mgrid[0:h, 0:w]
-    wx = 1 - np.abs(xx - w / 2) / (w / 2)
-    wy = 1 - np.abs(yy - h / 2) / (h / 2)
-    m = np.clip(np.minimum(wx, wy) * 2.2, 0, 1)[..., None]
-    return Image.fromarray((a * m + sh * (1 - m)).clip(0, 255).astype(np.uint8))
-
-
-def build_textures():
-    env = Image.open(os.path.join(SRC, "env_ground_tiles.jpg")).convert("RGB")
-    cols = [(21, 346), (361, 699), (713, 1051), (1066, 1391)]
-    rows = [(30, 204), (230, 401), (430, 604), (638, 765)]
-    picks = {
-        "asphalt": (0, 0, 0.0), "asphalt_hole": (0, 1, 0.0), "grass": (1, 0, 0.0), "mud": (1, 1, 0.0),
-        "dirt": (1, 2, 0.0), "concrete": (2, 0, 0.0), "concrete_cracked": (2, 1, 0.0), "concrete_holes": (2, 2, 0.0),
-    }
-    for name, (r, c, _) in picks.items():
-        x0, x1 = cols[c]
-        y0, y1 = rows[r]
-        # keep clear of the text label strip at the bottom of each tile
-        box = (x0 + 6, y0 + 6, x1 - 6, y0 + int((y1 - y0) * 0.78))
-        img = env.crop(box)
-        if name == "asphalt_hole":
-            continue  # potholes are drawn as soft dark decals instead
-        side = min(img.width, img.height)
-        img = img.crop(((img.width - side) // 2, 0, (img.width - side) // 2 + side, side))
-        img = seamless(img.resize((256, 256), Image.LANCZOS))
-        save_tex(img, name)
-
-
-def save_tex(img, name, keep=False):
-    img.save(os.path.join(ASSETS, "tex_%s.webp" % name), "WEBP", quality=82, method=6)
-    save_preview_raw(img.convert("RGBA"), "tex_" + name)
-
-
-def save_preview_raw(img, name):
-    os.makedirs(PREVIEW, exist_ok=True)
-    a = np.asarray(img.convert("RGBA")).astype(np.float32)
-    a[..., :3] *= a[..., 3:4] / 255.0  # premultiplied like Android's GLUtils upload
-    with open(os.path.join(PREVIEW, name + ".rgba"), "wb") as f:
-        f.write(np.array([img.width, img.height], "<u4").tobytes())
-        f.write(a.astype(np.uint8).tobytes())
-
-
-# ---------------------------------------------------------------- UI
 UI_BUTTONS = {
-    "btn_play": (27, 60, 362, 136),
-    "btn_story": (412, 75, 272, 98),
-    "btn_endless": (29, 234, 284, 63),
-    "btn_character": (367, 231, 316, 67),
-    "btn_settings": (367, 332, 316, 59),
-    "btn_quests": (766, 327, 260, 63),
-    "btn_exit": (1086, 328, 263, 60),
+    "btn_play": (27, 60, 362, 136), "btn_endless": (29, 234, 284, 63), "btn_settings": (367, 332, 316, 59),
+    "btn_quests": (766, 327, 260, 63), "btn_exit": (1086, 328, 263, 60),
 }
 UI_ICONS = {
-    "ic_punch": (746, 43, 59, 60), "ic_kick": (831, 39, 58, 64), "ic_dodge": (912, 41, 60, 62),
-    "ic_heal": (1075, 43, 58, 60), "ic_block": (1154, 43, 61, 60), "ic_pause": (1236, 39, 63, 64),
-    "ic_resume": (48, 706, 55, 55), "ic_restart": (154, 704, 56, 57),
-    "ic_check": (745, 611, 59, 59), "ic_lobby": (521, 608, 57, 60), "ic_gear": (1240, 233, 59, 62), "ic_scroll": (1317, 233, 63, 63),
-    
+    "ic_punch": (746, 43, 59, 60), "ic_dodge": (912, 41, 60, 62), "ic_block": (1154, 43, 61, 60),
+    "ic_pause": (1236, 39, 63, 64), "ic_resume": (48, 706, 55, 55), "ic_restart": (154, 704, 56, 57),
+    "ic_check": (745, 611, 59, 59), "ic_lobby": (521, 608, 57, 60), "ic_gear": (1240, 233, 59, 62),
+    "ic_scroll": (1317, 233, 63, 63),
 }
 
 
 def build_ui():
-    os.makedirs(DRAWABLE, exist_ok=True)
-    ui = Image.open(os.path.join(SRC, "ui_buttons.jpg")).convert("RGB")
+    for f in os.listdir(DRAWABLE):
+        os.remove(os.path.join(DRAWABLE, f))
+    ui = Image.open(os.path.join(sheets.SRC, "ui_buttons.jpg")).convert("RGB")
     bg = np.array([89, 122, 92], np.float32)
     for name, (x, y, w, h) in UI_BUTTONS.items():
         sub = np.asarray(ui.crop((x - 4, y - 4, x + w + 4, y + h + 4))).astype(np.float32)
-        col, alpha = key_character(sub, bg)
-        alpha = strip_small(alpha, 0.3)
-        t = trim(col, alpha, 1)
-        to_image(*t).save(os.path.join(DRAWABLE, name + ".webp"), "WEBP", quality=88, method=6)
+        col, alpha = sheets.key_character(sub, bg)
+        alpha = sheets.strip_small(alpha, 0.3)
+        sheets.to_image(*sheets.trim(col, alpha, 1)).save(os.path.join(DRAWABLE, name + ".webp"), "WEBP", quality=88, method=6)
     for name, rect in UI_ICONS.items():
-        img = icon_from_ui(ui, rect)
-        img = img.resize((128, int(128 * img.height / img.width)), Image.LANCZOS)
-        img.save(os.path.join(DRAWABLE, name + ".webp"), "WEBP", quality=88, method=6)
-    # portraits for the character screen
-    for name, sheet in [("portrait_soldier", "player_turnaround.jpg"), ("portrait_leather", "player_leather_turnaround.jpg"),
-                        ("portrait_zombie", "zombie_turnaround.jpg")]:
-        a = load(sheet)
-        cell = (P_COLS[0][0] + 6, 20, P_COLS[0][1] - 6, 382) if "zombie" not in sheet else (10, 10, 230, 380)
-        sub = a[cell[1]:cell[3], cell[0]:cell[2]]
-        bg_c = sample_bg(sub) if "leather" not in sheet else np.array([128, 128, 128], np.float32)
-        col, alpha = key_character(sub, bg_c) if "leather" not in sheet else key_gray(sub, bg_c)
-        alpha = strip_small(alpha)
-        t = trim(col, alpha)
-        img = to_image(*t)
-        img = img.resize((int(300 * img.width / img.height), 300), Image.LANCZOS)
-        img.save(os.path.join(DRAWABLE, name + ".webp"), "WEBP", quality=85, method=6)
-    # launcher icon: radiation emblem from the OYNA button on a dark plate
+        img = sheets.icon_from_ui(ui, rect)
+        img.resize((128, int(128 * img.height / img.width)), Image.LANCZOS).save(os.path.join(DRAWABLE, name + ".webp"), "WEBP", quality=88, method=6)
     emb = ui.crop((40, 68, 158, 186)).resize((150, 150), Image.LANCZOS)
     icon = Image.new("RGBA", (192, 192), (0, 0, 0, 0))
-    from PIL import ImageDraw
     ImageDraw.Draw(icon).rounded_rectangle((4, 4, 188, 188), radius=40, fill=(20, 26, 20, 255), outline=(120, 150, 90, 255), width=5)
     mask = Image.new("L", (150, 150), 0)
     ImageDraw.Draw(mask).ellipse((2, 2, 148, 148), fill=255)
     icon.paste(emb, (21, 21), mask)
     icon.save(os.path.join(DRAWABLE, "ic_launcher.webp"), "WEBP", quality=90, method=6)
-    # menu background: blurred, darkened environment collage
-    env = Image.open(os.path.join(SRC, "env_ground_tiles.jpg")).convert("RGB").crop((361, 30, 1051, 401))
-    env = env.resize((640, 344), Image.LANCZOS).filter(ImageFilter.GaussianBlur(3))
-    env = Image.fromarray((np.asarray(env).astype(np.float32) * 0.45).astype(np.uint8))
-    env.save(os.path.join(DRAWABLE, "menu_bg.webp"), "WEBP", quality=70, method=6)
 
 
-def key_gray(a, bg):
-    dist = np.abs(a - bg).sum(-1)
-    alpha = np.clip((dist - 12) / 40.0, 0, 1)
-    return a, alpha
+def write_gen(models, prop_sizes, vfx_lines):
+    with open(os.path.join(ASSETS, "textures.txt"), "w") as f:
+        f.write("\n".join(n for n, _ in textures) + "\n")
+    L = ["// @generated by tools/build_assets.py — do not edit.", "#![allow(dead_code)]", ""]
+    L.append("/// Texture files (asset names) in slot order.")
+    L.append("pub const TEXTURES: &[&str] = &[" + ", ".join(f'"{n}"' for n, _ in textures) + "];")
+    L.append("pub const MAT_ALPHA: u32 = 1;\npub const MAT_EMISSIVE: u32 = 2;\npub const MAT_SKIN: u32 = 4;")
+    L.append("/// (material name, albedo slot, normal slot or -1, flags)")
+    L.append("pub const MATERIALS: &[(&str, i32, i32, u32)] = &[")
+    for n, a, nn, fl in materials:
+        L.append(f'    ("{n}", {a}, {nn}, {fl}),')
+    L.append("];")
+    L.append("pub const MODELS: &[&str] = &[" + ", ".join(f'"{m}"' for m in models) + "];")
+    for name, (_, _) in SURFACES.items():
+        L.append(f'pub const SURF_{name.upper()}: &str = "surface_{name}";')
+    L.append(f'pub const SKY_TEXTURE: &str = "sky.pvr";\npub const VFX_TEXTURE: &str = "vfx.pvr";')
+    L.append("/// Prop sizes in metres (x, y, z) from Blender.")
+    L.append("pub const PROP_SIZES: &[(&str, [f32; 3])] = &[" + ", ".join(f'("{k}", [{v[0]:.3f}, {v[1]:.3f}, {v[2]:.3f}])' for k, v in prop_sizes.items()) + "];")
+    L += vfx_lines
+    with open(GEN, "w") as f:
+        f.write("\n".join(L) + "\n")
 
 
 if __name__ == "__main__":
-    build_textures()
-    build_sprites()
+    for d in (ASSETS, PREVIEW, DRAWABLE):
+        os.makedirs(d, exist_ok=True)
+    for f in os.listdir(ASSETS):
+        os.remove(os.path.join(ASSETS, f))
+    models = build_characters()
+    pm, sizes = build_props()
+    build_surfaces()
+    vfx = build_vfx()
     build_ui()
-    print("done")
+    write_gen(models + pm, sizes, vfx)
+    total = sum(os.path.getsize(os.path.join(ASSETS, f)) for f in os.listdir(ASSETS))
+    print(f"textures={len(textures)} materials={len(materials)} models={len(models) + len(pm)} assets={total / 1e6:.1f} MB")

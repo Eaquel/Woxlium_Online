@@ -6,59 +6,50 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.woxlium.zombie.Ui.dp
 
-/** Lobby: main menu built from the provided button artwork. */
+/** Lobby built from the provided button artwork; sized to fit any landscape screen. */
 class MainActivity : BaseActivity() {
     private lateinit var record: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        root.addView(ImageView(this).apply {
-            setImageResource(R.drawable.menu_bg)
-            scaleType = ImageView.ScaleType.CENTER_CROP
-        })
-        root.addView(View(this).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xF0060806.toInt(), 0x80060806.toInt(), 0xE0060806.toInt()))
-        })
-        // zombie looming on the right
-        root.addView(ImageView(this).apply {
-            setImageResource(R.drawable.portrait_zombie)
-            alpha = 0.55f
-            scaleType = ImageView.ScaleType.FIT_END
-        }, FrameLayout.LayoutParams(dp(260f), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.END or Gravity.BOTTOM))
+        NativeBridge.nativeInit(assets)
+        root.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFF10140F.toInt(), 0xFF050605.toInt()))
+
+        val h = resources.displayMetrics.heightPixels / resources.displayMetrics.density
+        // button height adapts so the whole menu fits on short phones
+        val unit = ((h - 40f) / 7.2f).coerceIn(38f, 58f)
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(28f), dp(16f), dp(28f), dp(16f))
+            setPadding(dp(28f), dp(10f), dp(28f), dp(10f))
         }
         val left = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.START
-            addView(Ui.label(context, "WOXLIUM", 54f, Ui.ACCENT).apply { letterSpacing = 0.12f })
-            addView(Ui.label(context, "ZOMBİ YAKIN DÖVÜŞ • HAYATTA KAL", 15f, Ui.DIM))
+            addView(Ui.label(context, "WOXLIUM", unit * 0.9f, Ui.ACCENT).apply { letterSpacing = 0.12f })
+            addView(Ui.label(context, "BİRİNCİ ŞAHIS ZOMBİ DÖVÜŞÜ", 14f, Ui.DIM))
             record = Ui.label(context, "", 13f, Ui.TEXT)
             addView(record)
-            addView(menuButton(R.drawable.btn_play, 108f) { startGame(NativeBridge.MODE_STORY) },
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(108f)).apply { topMargin = dp(12f) })
+            addView(menuButton(R.drawable.btn_play, unit * 1.8f) { showStory() },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(unit * 1.8f)).apply { topMargin = dp(10f) })
         }
         val right = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            addView(menuButton(R.drawable.btn_story, 70f) { showOverlay(Panels.story(context, { closeOverlay(); startGame(NativeBridge.MODE_STORY) }, { closeOverlay() })) })
-            addView(menuButton(R.drawable.btn_endless, 52f) { startGame(NativeBridge.MODE_ENDLESS) })
-            addView(menuButton(R.drawable.btn_character, 52f) { showOverlay(Panels.character(context) { closeOverlay(); refresh() }) })
-            addView(menuButton(R.drawable.btn_quests, 50f) { showOverlay(Panels.quests(context) { closeOverlay() }) })
-            addView(menuButton(R.drawable.btn_settings, 48f) { showOverlay(Panels.settings(context) { closeOverlay() }) })
-            addView(menuButton(R.drawable.btn_exit, 48f) { finishAffinity() })
+            addView(menuButton(R.drawable.btn_endless, unit) { startGame(NativeBridge.MODE_ENDLESS) })
+            addView(menuButton(R.drawable.btn_quests, unit) { showOverlay(Panels.quests(context) { closeOverlay() }) })
+            addView(menuButton(R.drawable.btn_settings, unit) { showOverlay(Panels.settings(context) { closeOverlay() }) })
+            addView(menuButton(R.drawable.btn_exit, unit) { finishAffinity() })
         }
         content.addView(left, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.1f))
         content.addView(right, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        root.addView(Ui.label(this, "Modeller: Microsoft Rocketbox (MIT) • Animasyon: Quaternius UAL (CC0) • Çevre: Poly Haven (CC0)", 10f, Ui.DIM, Gravity.CENTER),
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply { bottomMargin = dp(4f) })
         refresh()
     }
 
@@ -68,6 +59,10 @@ class MainActivity : BaseActivity() {
                 topMargin = dp(4f); bottomMargin = dp(4f)
             }
         }
+
+    private fun showStory() {
+        showOverlay(Panels.story(this, { closeOverlay(); startGame(NativeBridge.MODE_STORY) }, { closeOverlay() }))
+    }
 
     private fun refresh() {
         val p = Game.prefs

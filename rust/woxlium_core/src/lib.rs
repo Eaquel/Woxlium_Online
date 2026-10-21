@@ -1,20 +1,25 @@
-//! Woxlium — 3D zombie brawler core (simulation + GLES2 renderer).
-//! The Android app (Kotlin) owns the window, UI and audio; this library owns
-//! gameplay and drawing, driven through the JNI entry points in `jni.rs`.
+//! Woxlium — first-person 3D zombie brawler core.
+//! Simulation, skeletal animation and an OpenGL ES 3.0 renderer; the Android
+//! app (Kotlin) owns the window, UI and audio and drives this through `jni.rs`.
 
-pub mod atlas_gen;
+pub mod anim;
+pub mod assets;
+pub mod assets_gen;
 pub mod game;
+pub mod level;
 pub mod math;
-pub mod world;
+pub mod wxm;
 
 #[cfg(any(target_os = "android", feature = "preview"))]
+pub mod engine;
+#[cfg(any(target_os = "android", feature = "preview"))]
 pub mod gl;
+#[cfg(target_os = "android")]
+mod jni;
 #[cfg(any(target_os = "android", feature = "preview"))]
 pub mod render;
 #[cfg(any(target_os = "android", feature = "preview"))]
-pub mod engine;
-#[cfg(target_os = "android")]
-mod jni;
+pub mod texture;
 
 pub fn log(msg: &str) {
     #[cfg(target_os = "android")]

@@ -164,6 +164,13 @@ impl M4 {
         M4(m)
     }
 
+    pub fn ortho_depth(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> M4 {
+        let mut m = M4::ortho(l, r, b, t).0;
+        m[10] = -2.0 / (f - n);
+        m[14] = -(f + n) / (f - n);
+        M4(m)
+    }
+
     pub fn look_at(eye: V3, target: V3, up: V3) -> M4 {
         let f = (target - eye).norm();
         let s = f.cross(up).norm();
@@ -273,5 +280,155 @@ mod tests {
             let x = r.f();
             assert!((0.0..1.0).contains(&x));
         }
+    }
+}
+
+// ------------------------------------------------------------------ 3D extras
+impl V3 {
+    pub const ZERO: V3 = v3(0.0, 0.0, 0.0);
+    pub fn lerp(self, o: V3, t: f32) -> V3 {
+        self + (o - self) * t
+    }
+    pub fn xz(self) -> V2 {
+        v2(self.x, self.z)
+    }
+}
+
+impl std::ops::Neg for V3 {
+    type Output = V3;
+    fn neg(self) -> V3 {
+        v3(-self.x, -self.y, -self.z)
+    }
+}
+
+/// Unit quaternion (w, x, y, z).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quat {
+    pub w: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl Quat {
+    pub const IDENTITY: Quat = Quat { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+
+    pub fn from_axis_angle(axis: V3, angle: f32) -> Quat {
+        let a = axis.norm();
+        let (s, c) = (angle * 0.5).sin_cos();
+        Quat { w: c, x: a.x * s, y: a.y * s, z: a.z * s }
+    }
+
+    pub fn mul(self, o: Quat) -> Quat {
+        Quat {
+            w: self.w * o.w - self.x * o.x - self.y * o.y - self.z * o.z,
+            x: self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y,
+            y: self.w * o.y - self.x * o.z + self.y * o.w + self.z * o.x,
+            z: self.w * o.z + self.x * o.y - self.y * o.x + self.z * o.w,
+        }
+    }
+
+    pub fn dot(self, o: Quat) -> f32 {
+        self.w * o.w + self.x * o.x + self.y * o.y + self.z * o.z
+    }
+
+    pub fn normalize(self) -> Quat {
+        let l = self.dot(self).sqrt().max(1e-12);
+        Quat { w: self.w / l, x: self.x / l, y: self.y / l, z: self.z / l }
+    }
+
+    /// Normalised lerp along the shortest arc.
+    pub fn nlerp(self, o: Quat, t: f32) -> Quat {
+        let s = if self.dot(o) < 0.0 { -1.0 } else { 1.0 };
+        Quat {
+            w: self.w + (o.w * s - self.w) * t,
+            x: self.x + (o.x * s - self.x) * t,
+            y: self.y + (o.y * s - self.y) * t,
+            z: self.z + (o.z * s - self.z) * t,
+        }
+        .normalize()
+    }
+
+    pub fn rotate(self, v: V3) -> V3 {
+        let u = v3(self.x, self.y, self.z);
+        let t = u.cross(v) * 2.0;
+        v + t * self.w + u.cross(t)
+    }
+}
+
+impl M4 {
+    /// Translation * rotation (no scale).
+    pub fn from_tr(t: V3, q: Quat) -> M4 {
+        let (w, x, y, z) = (q.w, q.x, q.y, q.z);
+        let mut m = [0.0; 16];
+        m[0] = 1.0 - 2.0 * (y * y + z * z);
+        m[1] = 2.0 * (x * y + w * z);
+        m[2] = 2.0 * (x * z - w * y);
+        m[4] = 2.0 * (x * y - w * z);
+        m[5] = 1.0 - 2.0 * (x * x + z * z);
+        m[6] = 2.0 * (y * z + w * x);
+        m[8] = 2.0 * (x * z + w * y);
+        m[9] = 2.0 * (y * z - w * x);
+        m[10] = 1.0 - 2.0 * (x * x + y * y);
+        m[12] = t.x;
+        m[13] = t.y;
+        m[14] = t.z;
+        m[15] = 1.0;
+        M4(m)
+    }
+
+    pub fn translation(&self) -> V3 {
+        v3(self.0[12], self.0[13], self.0[14])
+    }
+
+    pub fn transform_point(&self, p: V3) -> V3 {
+        let c = self.transform(p);
+        v3(c[0], c[1], c[2])
+    }
+
+    pub fn transform_dir(&self, d: V3) -> V3 {
+        let m = &self.0;
+        v3(m[0] * d.x + m[4] * d.y + m[8] * d.z, m[1] * d.x + m[5] * d.y + m[9] * d.z, m[2] * d.x + m[6] * d.y + m[10] * d.z)
+    }
+
+    pub fn scale(s: V3) -> M4 {
+        let mut m = M4::identity();
+        m.0[0] = s.x;
+        m.0[5] = s.y;
+        m.0[10] = s.z;
+        m
+    }
+
+    /// Inverse of a rigid transform (rotation + translation only).
+    pub fn rigid_inverse(&self) -> M4 {
+        let m = &self.0;
+        let mut r = M4::identity().0;
+        for i in 0..3 {
+            for j in 0..3 {
+                r[i * 4 + j] = m[j * 4 + i];
+            }
+        }
+        let t = self.translation();
+        r[12] = -(r[0] * t.x + r[4] * t.y + r[8] * t.z);
+        r[13] = -(r[1] * t.x + r[5] * t.y + r[9] * t.z);
+        r[14] = -(r[2] * t.x + r[6] * t.y + r[10] * t.z);
+        M4(r)
+    }
+}
+
+#[cfg(test)]
+mod quat_tests {
+    use super::*;
+
+    #[test]
+    fn quat_matches_matrix() {
+        let q = Quat::from_axis_angle(v3(0.3, 1.0, 0.2), 1.1);
+        let p = v3(0.5, -1.0, 2.0);
+        let a = q.rotate(p);
+        let b = M4::from_tr(V3::ZERO, q).transform_point(p);
+        assert!((a - b).len() < 1e-5);
+        let m = M4::from_tr(v3(1.0, 2.0, 3.0), q);
+        let back = m.rigid_inverse().mul(&m).transform_point(p);
+        assert!((back - p).len() < 1e-4);
     }
 }

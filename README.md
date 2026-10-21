@@ -1,52 +1,73 @@
-# Woxlium — 3D Zombi Yakın Dövüş (MVP)
+# Woxlium — Birinci Şahıs 3D Zombi Dövüşü
 
-Rust (oyun çekirdeği + OpenGL ES 2.0 renderer) ve Kotlin (Android arayüzü, ses, dokunmatik kontroller) ile yazılmış 3D zombi hayatta kalma oyunu.
+Rust (oyun çekirdeği + OpenGL ES 3.0 renderer) ve Kotlin (Android arayüzü, ses, dokunmatik kontroller) ile yazılmış, birinci şahıs, gerçek 3D yakın dövüş zombi oyunu.
 
-* **Android 7.0 (API 24) → Android 17 (API 37)**, `minSdk 24`, `targetSdk 36`
-* **32 + 64 bit**: `armeabi-v7a`, `arm64-v8a` (+ emülatör/Chromebook için `x86_64`)
-* 16 KB sayfa hizalı native kütüphane (Android 15+ / Play şartı)
-* Tek APK ≈ **2.6 MB** (3 ABI dahil), sıfır harici Rust bağımlılığı, AndroidX yok
+* **Android 7.0 (API 24) → Android 17 (API 37)**, `minSdk 24`, `targetSdk 36`, OpenGL ES 3.0
+* **32 + 64 bit**: `armeabi-v7a`, `arm64-v8a` (+ emülatör/Chromebook için `x86_64`), 16 KB sayfa hizalı
+* Release APK ≈ 17 MB (3 ABI, tüm modeller/dokular dahil)
+
+## Görsel içerik (gerçek 3D)
+* **Zombiler:** Microsoft Rocketbox'ın gerçekçi insan modelleri (7–9K üçgen, normal map'li). Dokular otomatik zombileştirilir: solgun ölü ten, damarlar, morluklar, buğulu gözler, kan lekeleri.
+* **Animasyonlar:** Mocap animasyonları retarget edilir. Zombilerde sarhoş/yaralı yürüme ve koşu (kollar öne uzatılmış), saldırı, göğüs ve kafa darbesi tepkisi, ölüm var. FP kollarda boks guard, jab ve cross.
+* **Çevre:** Poly Haven taranmış (photoscanned) proplar: araba, beton bariyer, sokak lambası, çöp kutusu, lastik, varil, yangın musluğu. Modüler kitten prosedürel birleştirilen 4 katlı apartman cepheleri, PBR asfalt/kaldırım/çamur dokuları ve Samanyolu'lu gece gökyüzü.
+* **Renderer:**
+  * GPU skinning ve normal mapping
+  * Ay ışığı gölge haritası (PCF), oyuncunun el feneri (spot ışık), titreyen sokak lambaları
+  * Üstel sis, ACES ton eşleme, ETC2 sıkıştırılmış dokular
+  * Kan, kıvılcım ve şok dalgası efektleri; ölüm yerinde büyüyen kan gölü
 
 ## Oynanış
-* **Sol yarı**: kayan joystick (parmağın değdiği yerde belirir)
-* **Yumruk**: 3'lü kombo (3. vuruş güçlü / kritik + şok dalgası), otomatik hedefleme, vuruş duraksaması (hit-stop) ve ekran sarsıntısı
-* **Tekme**: geniş açı, kalabalığı geri iter · **Blok** (basılı tut): hasarı %80 azaltır, kalkan efekti · **Kaçınma**: dokunulmaz atılma · **İlk yardım**: +45 can
-* Dayanıklılık sistemi: azaldığında ter, bittiğinde duman efekti
-* Zombiler: Yürüyen, Koşucu, Atlayan (uzaktan sıçrar), Şişko (ölünce zehirli patlar) — duvarların etrafından akış alanı (flow-field) ile yol bulur
-* **Hikaye modu**: 5 dalga + tahliye noktasına koşu · **Sonsuz dalga**: rekor için
-* **Sağ üst mini harita** (yollar, duvarlar, zombiler, ilk yardım, tahliye); **dokununca büyük haritaya büyür**, tekrar dokununca kapanır
-* Tüm butonlar basıldıkça büyür; titreşim ve prosedürel üretilmiş ses efektleri
-* Lobi: OYNA, Hikaye Modu, Sonsuz Dalga, Karakter & Envanter (2 kıyafet), Görevler (8 başarım), Ayarlar (ses, titreşim, grafik kalitesi = render ölçeği, 30/60 FPS, FPS göstergesi, kamera yakınlığı), Çıkış
-* Seviye kasma yok: tüm yetenekler baştan açık
+* **Kontroller:** Sol yarı joystick ile yürünür, sağ yarı sürüklenerek etrafa bakılır.
+* **Yumruk:** Sol-sağ-güçlü üçlü kombo.
+  * Vuruşta hit-stop ve kamera sarsıntısı olur, yakındaki zombiye hafifçe çekilirsin.
+  * Yukarı bakarak vurulan kafa darbelerinin kritik olma şansı daha yüksek.
+* **Blok:** Basılı tutulur, hasarı %85 azaltır.
+* **Atılma:** Kısa süre hasar almadan kaçarsın.
+* **Dayanıklılık:** Her hareket dayanıklılık harcar.
+* **Zombi AI:** Akış alanı (flow field) ile engellerin etrafından yol bulur, koşucu zombiler 2. dalgadan itibaren gelir.
+* **Modlar:** Hikaye modunda 5 dalganın ardından kırmızı fişeğe koşup tahliye olursun. Sonsuz dalgada rekor tutulur.
+* **İlk yardım çantaları:** Yerde parlar, üstüne gelince +40 can verir.
+* **Mini harita:** Sağ üstte, bakış yönüne göre döner; dokununca büyük haritaya açılır.
+* **Lobi:** OYNA (hikaye), Sonsuz Dalga, Görevler (8 başarım), Ayarlar ve Çıkış.
+  * Ayarlar: ses, titreşim, grafik kalitesi (gölge + çözünürlük), 30/60 FPS, FPS göstergesi, bakış hassasiyeti.
+  * Paneller küçük ekranda kaydırılabilir; lobi ekran yüksekliğine göre ölçeklenir.
 
 ## Proje yapısı
 ```
-art/source/                 verilen konsept sayfaları (kaynak)
-tools/build_assets.py       yeşil perde temizleme, kare kesme, atlas paketleme, UI kesimi
-app/src/main/assets/        üretilen sprites.webp (2048² atlas) + 256² zemin/duvar dokuları
-app/src/main/res/drawable-nodpi/  üretilen butonlar ve ikonlar
-rust/woxlium_core/          Rust çekirdeği (game.rs, world.rs, render.rs, engine.rs, jni.rs)
-rust/build_android.sh       tüm ABI'ler için çapraz derleme (Gradle preBuild'den çağrılır)
-app/src/main/java/...       Kotlin: lobi, oyun ekranı, HUD, ses, ayarlar
+rust/woxlium_core/src/
+  game.rs     FP oyun mantığı (oyuncu, zombi AI, dalgalar, efektler)  — GL'siz, test edilebilir
+  level.rs    şehir kavşağı yerleşimi, çarpışma, akış alanı
+  anim.rs     klip örnekleme, cross-fade, skin matrisleri
+  wxm.rs      .wxm model/iskelet/animasyon yükleyici
+  render.rs   GLES3 renderer
+  texture.rs  ETC2 PVR yükleyici · assets.rs  APK (AAssetManager) / dizin kaynağı
+  engine.rs, jni.rs
+tools/blender/wxm_export.py    Rocketbox avatar + UAL/Rocketbox klip retarget → .wxm
+tools/blender/props_export.py  Poly Haven propları → .wxm
+tools/blender/facade_build.py  modüler kitten apartman cephesi birleştirme
+tools/build_assets.py          zombileştirme, ETC2 sıkıştırma, VFX atlası, UI kesimi, assets_gen.rs
+tools/fetch_assets.sh          üçüncü parti kaynak assetleri indirir (repo'ya eklenmez)
+app/src/main/java/...          Kotlin: lobi, oyun ekranı, HUD, ses, ayarlar
 ```
+Lisanslar: `THIRD_PARTY_NOTICES.md` (Rocketbox MIT, Quaternius + Poly Haven CC0).
 
 ## Derleme
-Gereksinimler: JDK 17+, Android SDK (platform 36, NDK 28.2.13676358), Rust + hedefler:
 ```bash
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 ./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
 ```
-Release APK şimdilik debug anahtarıyla imzalanır — yayınlamadan önce `app/build.gradle.kts` içinde kendi keystore'unuzu tanımlayın.
+Üretilmiş assetler (`app/src/main/assets`) repoda olduğu için APK derlemek için Blender gerekmez.
+İçeriği baştan üretmek için: `tools/fetch_assets.sh && BLENDER=/path/blender ETCPAK=/path/etcpak tools/rebuild_all.sh`
 
-Assetleri yeniden üretmek için (Pillow, numpy, scipy): `python3 tools/build_assets.py`
+Release APK şimdilik debug anahtarıyla imzalanır; yayınlamadan önce kendi keystore'unuzu tanımlayın.
 
 ## Test
 ```bash
-cd rust/woxlium_core && cargo test --release     # oyun mantığı / dünya / matematik testleri
+cd rust/woxlium_core && cargo test --release
 ```
-Masaüstü görsel doğrulama (ANGLE/SwiftShader ile ekran dışı render, senaryolu oynanış + ekran görüntüleri):
+Masaüstü görsel doğrulama (ANGLE/SwiftShader ile ekran dışı GLES3 render):
 ```bash
-A=/path/to/chromium   # libEGL.so, libGLESv2.so, vk_swiftshader_icd.json içeren dizin
+A=/path/to/chromium   # libEGL.so, libGLESv2.so, vk_swiftshader_icd.json
 RUSTFLAGS="-L $A" cargo build --release --features preview --bin preview
-VK_ICD_FILENAMES=$A/vk_swiftshader_icd.json LD_LIBRARY_PATH=$A ./target/release/preview out ../../build/preview_assets
+VK_ICD_FILENAMES=$A/vk_swiftshader_icd.json LD_LIBRARY_PATH=$A ./target/release/preview out ../../build/preview_assets [fight|tour|story]
 ```
